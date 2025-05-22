@@ -35,8 +35,47 @@ with st.expander("🏢 Company Snapshot"):
         st.markdown(f"**Profit Margin:** {info.get('profitMargins', '-')}")
         st.markdown(f"**Revenue Growth:** {info.get('revenueGrowth', '-')}")
         st.markdown(f"**Dividend Yield:** {info.get('dividendYield', '-')}")
+        st.markdown(f"**Return on Equity (ROE):** {info.get('returnOnEquity', '-')}")
+        st.markdown(f"**Free Cash Flow:** {info.get('freeCashflow', '-'):,}")
+        st.markdown(f"**Operating Margins:** {info.get('operatingMargins', '-')}")
+        st.markdown(f"**Insider Ownership:** {info.get('heldPercentInsiders', '-')}")
     except:
         st.warning("Unable to load company fundamentals.")
+
+# === Fundamental Trends Chart ===
+with st.expander("📊 Historical Valuation Metrics"):
+    try:
+        t = yf.Ticker(ticker)
+        hist = t.history(period="5y")
+        fin = t.financials.T
+        bal = t.balance_sheet.T
+
+        pe_ratio = hist['Close'] / t.earnings['Earnings'].reindex(hist.index.year).ffill().values
+        ps_ratio = hist['Close'] / (t.earnings['Revenue'].reindex(hist.index.year).ffill().values / 1e9)
+        book_value = bal['TotalStockholderEquity'] / info.get('sharesOutstanding', 1)
+        pb_ratio = hist['Close'] / book_value.ffill().reindex(hist.index, method='ffill')
+
+        fig, axs = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+
+        axs[0].plot(hist.index, pe_ratio, label='P/E Ratio')
+        axs[0].axhline(pe_ratio.mean(), color='gray', linestyle='--', label='Avg P/E')
+        axs[0].legend()
+        axs[0].set_title("Price-to-Earnings Ratio")
+
+        axs[1].plot(hist.index, ps_ratio, label='P/S Ratio', color='purple')
+        axs[1].axhline(ps_ratio.mean(), color='gray', linestyle='--', label='Avg P/S')
+        axs[1].legend()
+        axs[1].set_title("Price-to-Sales Ratio")
+
+        axs[2].plot(hist.index, pb_ratio, label='P/B Ratio', color='green')
+        axs[2].axhline(pb_ratio.mean(), color='gray', linestyle='--', label='Avg P/B')
+        axs[2].legend()
+        axs[2].set_title("Price-to-Book Ratio")
+
+        plt.tight_layout()
+        st.pyplot(fig)
+    except:
+        st.warning("Could not generate valuation charts.")
 
 # === Download and Prepare Data ===
 data = yf.download(ticker, start=start_date, end=end_date)
