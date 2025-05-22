@@ -22,26 +22,47 @@ start_date = st.date_input("Start date", pd.to_datetime("2020-01-01"))
 end_date   = st.date_input("End   date", pd.to_datetime("2024-12-31"))
 
 # --- Company snapshot -------------------------------
-with st.expander("🏢 Company Snapshot"):
+# --- Annual Valuation Ratios ------------------------
+with st.expander("📊 Annual Valuation Metrics (Bar Chart)"):
     try:
         t    = yf.Ticker(ticker)
         info = t.info
-        st.markdown(f"**Name:** {info.get('longName','-')}")
-        st.markdown(f"**Sector:** {info.get('sector','-')}")
-        st.markdown(f"**Market Cap:** {info.get('marketCap',0):,}")
-        st.markdown(f"**Trailing P/E:** {info.get('trailingPE','-')}")
-        st.markdown(f"**Forward  P/E:** {info.get('forwardPE','-')}")
-        st.markdown(f"**PEG Ratio:** {info.get('pegRatio','-')}")
-        st.markdown(f"**EPS (TTM):** {info.get('trailingEps','-')}")
-        st.markdown(f"**Profit Margin:** {info.get('profitMargins','-')}")
-        st.markdown(f"**Revenue Growth:** {info.get('revenueGrowth','-')}")
-        st.markdown(f"**Dividend Yield:** {info.get('dividendYield','-')}")
-        st.markdown(f"**ROE:** {info.get('returnOnEquity','-')}")
-        st.markdown(f"**Free Cash Flow:** {info.get('freeCashflow',0):,}")
-        st.markdown(f"**Operating Margins:** {info.get('operatingMargins','-')}")
-        st.markdown(f"**Insider Ownership:** {info.get('heldPercentInsiders','-')}")
-    except Exception:
-        st.warning("⚠️ Unable to load company fundamentals.")
+        hist = t.history(period="5y")
+
+        # 1️⃣ Year-end price
+        ye_price = hist['Close'].resample('Y').last()
+
+        # 2️⃣ Annual earnings & revenue (indexed by year integer)
+        earn = t.earnings['Earnings']      # Series: idx = [2023,2022,...]
+        rev   = t.earnings['Revenue']      # Series same index
+
+        # Map year-end prices to those same year ints
+        years = ye_price.index.year
+        earn_yr = earn.reindex(years).values
+        rev_yr  = rev.reindex(years).values
+
+        # 3️⃣ Balance sheet → Total equity, then book-value per share
+        bs      = t.balance_sheet.loc['TotalStockholderEquity']  # idx = dates
+        eq_yr   = bs.resample('Y').last().reindex(ye_price.index).values
+        shares  = info.get('sharesOutstanding', np.nan)
+        bv_yr   = eq_yr / shares
+
+        # 4️⃣ Compute ratios
+        pe = ye_price.values / earn_yr
+        ps = ye_price.values / (rev_yr / 1e9)
+        pb = ye_price.values / bv_yr
+
+        # 5️⃣ Build DataFrame & plot bars
+        df_ratios = pd.DataFrame({
+            'P/E': pe,
+            'P/S': ps,
+            'P/B': pb
+        }, index=ye_price.index)
+
+        st.bar_chart(df_ratios)
+
+    except Exception as e:
+        st.warning(f"Could not generate annual valuation charts: {e}")
 
 # --- Historical Valuation Charts --------------------
 with st.expander("📊 Historical Valuation Metrics"):
