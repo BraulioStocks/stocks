@@ -10,13 +10,38 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Stock Trend Predictor", layout="wide")
 st.set_option('client.showErrorDetails', True)
-st.title("📈 Stock Trend Predictor (XGBoost + Strategy Analysis)")
+st.title("📈 Stock Trend Predictor (XGBoost Edition)")
 
 # === User Inputs ===
 ticker = st.text_input("Enter stock ticker (e.g., AAPL, TSLA):", value="AAPL")
 start_date = st.date_input("Start date", pd.to_datetime("2020-01-01"))
 end_date = st.date_input("End date", pd.to_datetime("2024-12-31"))
 initial_cash = st.number_input("💵 Initial investment ($)", min_value=1000, max_value=1000000, value=10000, step=1000)
+
+# === FUNDAMENTALS PREVIEW ===
+st.subheader("📊 Fundamental Analysis: Key Financials (from Yahoo Finance)")
+ticker_obj = yf.Ticker(ticker)
+
+try:
+    info = ticker_obj.info
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric("Market Cap", f"${info.get('marketCap', 0) / 1e9:.2f}B")
+    col2.metric("P/E Ratio (TTM)", info.get('trailingPE', 'N/A'))
+    col3.metric("Forward P/E", info.get('forwardPE', 'N/A'))
+
+    col1.metric("Return on Equity (ROE)", f"{info.get('returnOnEquity', 0)*100:.2f}%")
+    col2.metric("Profit Margin", f"{info.get('profitMargins', 0)*100:.2f}%")
+    col3.metric("Debt to Equity", info.get('debtToEquity', 'N/A'))
+
+    col1.metric("EPS (TTM)", info.get('trailingEps', 'N/A'))
+    col2.metric("Revenue (TTM)", f"${info.get('totalRevenue', 0) / 1e9:.2f}B")
+    col3.metric("Free Cash Flow", f"${info.get('freeCashflow', 0) / 1e6:.0f}M")
+
+except Exception as e:
+    st.warning("⚠️ Could not retrieve fundamentals.")
+    st.exception(e)
 
 # === Download and Prepare Data ===
 data = yf.download(ticker, start=start_date, end=end_date)
@@ -58,7 +83,6 @@ y_pred = model.predict(X_test)
 data_test = data.iloc[-len(y_test):].copy()
 data_test['Prediction'] = y_pred
 
-# === Expanders for Clean UI ===
 with st.expander("📋 Model Performance"):
     st.write(f"Accuracy: **{accuracy_score(y_test, y_pred):.2%}**")
     st.text(classification_report(y_test, y_pred))
@@ -91,10 +115,10 @@ with st.expander("💰 Strategy Backtest (Model vs Buy & Hold)"):
     for i in range(1, len(data_test)):
         price_today = data_test['Close'].iloc[i]
         signal = data_test['Signal'].iloc[i]
-        if signal == 1 and position == 0:
+        if signal.item() == 1 and position == 0:
             position = cash / price_today
             cash = 0
-        elif signal == 0 and position > 0:
+        elif signal.item() == 0 and position > 0:
             cash = position * price_today
             position = 0
         total = cash + position * price_today
