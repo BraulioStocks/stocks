@@ -13,13 +13,30 @@ from xgboost import XGBClassifier
 
 st.set_page_config(page_title="Stock Trend Predictor", layout="wide")
 st.set_option('client.showErrorDetails', True)
-st.title("📈 Stock Trend Predictor (Model Comparison Edition)")
+st.title("📈 Stock Trend Predictor (AutoML Edition)")
 
 # === User Inputs ===
 ticker = st.text_input("Enter stock ticker (e.g., AAPL, TSLA):", value="AAPL")
 start_date = st.date_input("Start date", pd.to_datetime("2020-01-01"))
 end_date = st.date_input("End date", pd.to_datetime("2024-12-31"))
-model_choice = st.selectbox("Choose prediction model:", ["XGBoost", "Random Forest", "Logistic Regression"])
+
+# === Company Summary ===
+with st.expander("🏢 Company Snapshot"):
+    try:
+        ticker_obj = yf.Ticker(ticker)
+        info = ticker_obj.info
+        st.markdown(f"**Name:** {info.get('longName', '-')}")
+        st.markdown(f"**Sector:** {info.get('sector', '-')}")
+        st.markdown(f"**Market Cap:** {info.get('marketCap', '-'):,}")
+        st.markdown(f"**Trailing P/E:** {info.get('trailingPE', '-')}")
+        st.markdown(f"**Forward P/E:** {info.get('forwardPE', '-')}")
+        st.markdown(f"**PEG Ratio:** {info.get('pegRatio', '-')}")
+        st.markdown(f"**EPS (TTM):** {info.get('trailingEps', '-')}")
+        st.markdown(f"**Profit Margin:** {info.get('profitMargins', '-')}")
+        st.markdown(f"**Revenue Growth:** {info.get('revenueGrowth', '-')}")
+        st.markdown(f"**Dividend Yield:** {info.get('dividendYield', '-')}")
+    except:
+        st.warning("Unable to load company fundamentals.")
 
 # === Download and Prepare Data ===
 data = yf.download(ticker, start=start_date, end=end_date)
@@ -53,24 +70,46 @@ X = data[features]
 y = data['Target']
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
-# === Model Selection ===
-if model_choice == "XGBoost":
-    model = XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
-elif model_choice == "Random Forest":
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
-else:
-    model = LogisticRegression(max_iter=1000, solver='lbfgs')
+# === AutoML Logic ===
+models = {
+    "XGBoost": XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42),
+    "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42),
+    "Logistic Regression": LogisticRegression(max_iter=1000, solver='lbfgs')
+}
 
-model.fit(X_train, y_train)
-y_pred = model.predict(X_test)
+results = []
+
+for name, model in models.items():
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    test_copy = data.iloc[-len(y_test):].copy()
+    test_copy['Prediction'] = y_pred
+    test_copy['Signal'] = test_copy['Prediction'].shift(1)
+    test_copy['Daily Return'] = test_copy['Close'].pct_change()
+    test_copy['Strategy Return'] = test_copy['Daily Return'] * test_copy['Signal']
+
+    cumulative_strategy = (1 + test_copy['Strategy Return'].fillna(0)).cumprod()
+    sharpe = np.sqrt(252) * test_copy['Strategy Return'].mean() / test_copy['Strategy Return'].std()
+
+    results.append({
+        "Model": name,
+        "Accuracy": accuracy_score(y_test, y_pred),
+        "Sharpe": sharpe,
+        "Final Value": cumulative_strategy.iloc[-1],
+        "Predictions": y_pred
+    })
+
+# Select best by Sharpe Ratio
+best_model = max(results, key=lambda x: x['Sharpe'])
 
 data_test = data.iloc[-len(y_test):].copy()
-data_test['Prediction'] = y_pred
+data_test['Prediction'] = best_model['Predictions']
+
+st.success(f"✅ Best model: {best_model['Model']} (Sharpe: {best_model['Sharpe']:.2f})")
 
 with st.expander("📋 Model Performance"):
-    st.write(f"Model Used: **{model_choice}**")
-    st.write(f"Accuracy: **{accuracy_score(y_test, y_pred):.2%}**")
-    st.text(classification_report(y_test, y_pred))
+    st.write(f"Model Used: **{best_model['Model']}**")
+    st.write(f"Accuracy: **{best_model['Accuracy']:.2%}**")
 
 with st.expander("📈 Price with Prediction Markers"):
     fig1, ax1 = plt.subplots(figsize=(12, 5))
