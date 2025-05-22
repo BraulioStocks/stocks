@@ -7,7 +7,6 @@ Original file is located at
     https://colab.research.google.com/drive/1r-mtj_b87TaeW3vY3X7Y0KcNw4X81jyU
 """
 
-streamlit run streamlit_app.py
 
 # streamlit_app.py
 
