@@ -16,7 +16,6 @@ st.title("📈 Stock Trend Predictor (XGBoost Edition)")
 ticker = st.text_input("Enter stock ticker (e.g., AAPL, TSLA):", value="AAPL")
 start_date = st.date_input("Start date", pd.to_datetime("2020-01-01"))
 end_date = st.date_input("End date", pd.to_datetime("2024-12-31"))
-initial_cash = st.number_input("💵 Initial investment ($)", min_value=1000, max_value=1000000, value=10000, step=1000)
 
 # === FUNDAMENTALS PREVIEW ===
 st.subheader("📊 Fundamental Analysis: Key Financials (from Yahoo Finance)")
@@ -38,6 +37,33 @@ try:
     col1.metric("EPS (TTM)", info.get('trailingEps', 'N/A'))
     col2.metric("Revenue (TTM)", f"${info.get('totalRevenue', 0) / 1e9:.2f}B")
     col3.metric("Free Cash Flow", f"${info.get('freeCashflow', 0) / 1e6:.0f}M")
+
+    # === Long-Term Investment Recommendation ===
+    st.subheader("📌 Long-Term Investment Recommendation")
+    pe = info.get('trailingPE', None)
+    roe = info.get('returnOnEquity', 0)
+    pm = info.get('profitMargins', 0)
+    fcf = info.get('freeCashflow', 0)
+    debt_eq = info.get('debtToEquity', None)
+
+    score = 0
+    if pe and pe < 25:
+        score += 1
+    if roe and roe > 0.15:
+        score += 1
+    if pm and pm > 0.1:
+        score += 1
+    if fcf and fcf > 0:
+        score += 1
+    if debt_eq and float(debt_eq) < 1:
+        score += 1
+
+    if score >= 4:
+        st.success("🟢 Strong fundamentals — potential long-term buy")
+    elif score == 3:
+        st.info("🟡 Moderate strength — watchlist candidate")
+    else:
+        st.warning("🔴 Weak fundamentals — proceed with caution")
 
 except Exception as e:
     st.warning("⚠️ Could not retrieve fundamentals.")
@@ -96,49 +122,8 @@ with st.expander("📈 Price with Prediction Markers"):
     ax1.grid()
     st.pyplot(fig1)
 
-with st.expander("🔍 Feature Importance"):
-    importances = model.feature_importances_
-    feature_importance_df = pd.DataFrame({
-        'Feature': X.columns,
-        'Importance': importances
-    }).sort_values(by='Importance', ascending=False)
-    st.bar_chart(feature_importance_df.set_index('Feature'))
-
-with st.expander("💰 Strategy Backtest (Model vs Buy & Hold)"):
-    cash = initial_cash
-    position = 0
-    strategy_values = []
-    buy_and_hold_values = []
-    data_test['Signal'] = data_test['Prediction'].shift(1)
-    buy_and_hold_shares = initial_cash / data_test['Close'].iloc[0]
-
-    for i in range(1, len(data_test)):
-        price_today = data_test['Close'].iloc[i]
-        signal = data_test['Signal'].iloc[i]
-        if signal.item() == 1 and position == 0:
-            position = cash / price_today
-            cash = 0
-        elif signal.item() == 0 and position > 0:
-            cash = position * price_today
-            position = 0
-        total = cash + position * price_today
-        strategy_values.append(total)
-        bh_total = buy_and_hold_shares * price_today
-        buy_and_hold_values.append(bh_total)
-
-    final_strategy = strategy_values[-1]
-    final_bh = buy_and_hold_values[-1]
-    col1, col2 = st.columns(2)
-    col1.metric("📈 Strategy Final Value", f"${final_strategy:,.2f}")
-    col2.metric("📊 Buy & Hold Final Value", f"${final_bh:,.2f}")
-
-    returns_df = pd.DataFrame({
-        "Strategy": strategy_values,
-        "Buy & Hold": buy_and_hold_values
-    }, index=data_test.index[1:])
-    st.line_chart(returns_df)
-
 with st.expander("📌 Trade Signals on Chart"):
+    data_test['Signal'] = data_test['Prediction'].shift(1)
     fig2, ax2 = plt.subplots(figsize=(12, 5))
     ax2.plot(data_test.index, data_test['Close'], label="Close Price", color='gray')
     buy_signals = (data_test['Signal'] == 1) & (data_test['Signal'].shift(1) != 1)
