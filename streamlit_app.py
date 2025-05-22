@@ -38,7 +38,6 @@ try:
     col2.metric("Revenue (TTM)", f"${info.get('totalRevenue', 0) / 1e9:.2f}B")
     col3.metric("Free Cash Flow", f"${info.get('freeCashflow', 0) / 1e6:.0f}M")
 
-    # === Long-Term Investment Recommendation ===
     st.subheader("📌 Long-Term Investment Recommendation")
     pe = info.get('trailingPE', None)
     roe = info.get('returnOnEquity', 0)
@@ -122,8 +121,29 @@ with st.expander("📈 Price with Prediction Markers"):
     ax1.grid()
     st.pyplot(fig1)
 
-with st.expander("📌 Trade Signals on Chart"):
+with st.expander("📊 Quant Backtest Metrics"):
     data_test['Signal'] = data_test['Prediction'].shift(1)
+    data_test['Daily Return'] = data_test['Close'].pct_change()
+    data_test['Strategy Return'] = data_test['Daily Return'] * data_test['Signal']
+
+    cumulative_strategy = (1 + data_test['Strategy Return'].fillna(0)).cumprod()
+    cumulative_market = (1 + data_test['Daily Return'].fillna(0)).cumprod()
+
+    sharpe = np.sqrt(252) * data_test['Strategy Return'].mean() / data_test['Strategy Return'].std()
+
+    st.metric("📈 Strategy Sharpe Ratio", f"{sharpe:.2f}")
+    st.line_chart(pd.DataFrame({
+        "Strategy": cumulative_strategy,
+        "Buy & Hold": cumulative_market
+    }))
+
+    st.dataframe(pd.DataFrame({
+        "Final Strategy Value ($1)": [cumulative_strategy.iloc[-1]],
+        "Final Market Value ($1)": [cumulative_market.iloc[-1]],
+        "Annualized Volatility": [data_test['Strategy Return'].std() * np.sqrt(252)]
+    }).T.rename(columns={0: "Value"}))
+
+with st.expander("📌 Trade Signals on Chart"):
     fig2, ax2 = plt.subplots(figsize=(12, 5))
     ax2.plot(data_test.index, data_test['Close'], label="Close Price", color='gray')
     buy_signals = (data_test['Signal'] == 1) & (data_test['Signal'].shift(1) != 1)
