@@ -40,78 +40,112 @@ with st.expander("🏢 Company Snapshot"):
     except Exception:
         st.warning("⚠️ Unable to load company fundamentals.")
 
-# --- Annual Valuations via FMP ----------------------
-with st.expander("📊 Annual Valuation Metrics (via FMP API)"):
+# --- Valuation Metrics (Annual vs Quarterly‐TTM) -----
+with st.expander("📊 Valuation Metrics (via FMP API)"):
+    view = st.selectbox("Select view:", ["Annual", "Quarterly-TTM"])
     try:
-        # 1) Fetch income statement and balance sheet (last 5 years)
-        df_inc = pd.DataFrame(
-            requests.get(
-                f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}"
-                f"?limit=5&apikey={apikey}"
-            ).json()
+        # Fetch 5 years of quarterly data for TTM calculations
+        inc_url = (
+            f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}"
+            f"?period=quarter&limit=20&apikey={apikey}"
         )
-        df_bs = pd.DataFrame(
-            requests.get(
-                f"https://financialmodelingprep.com/api/v3/balance-sheet-statement/{ticker}"
-                f"?limit=5&apikey={apikey}"
-            ).json()
+        bs_url  = (
+            f"https://financialmodelingprep.com/api/v3/balance-sheet-statement/{ticker}"
+            f"?period=quarter&limit=20&apikey={apikey}"
         )
+        df_inc = pd.DataFrame(requests.get(inc_url).json())
+        df_bs  = pd.DataFrame(requests.get(bs_url).json())
+        if df_inc.empty or df_bs.empty:
+            raise ValueError("FMP returned no quarterly data")
 
-        # 2) Validate
-        if df_inc.empty or not {'eps','revenue'}.issubset(df_inc.columns):
-            raise ValueError("Income statement data incomplete")
-        if df_bs.empty or 'totalStockholdersEquity' not in df_bs.columns:
-            raise ValueError("Balance sheet data incomplete")
-
-        # 3) Index by fiscal year-end date
+        # Prepare indexes
         df_inc['date'] = pd.to_datetime(df_inc['date'])
         df_inc.set_index('date', inplace=True)
-        df_bs['date']  = pd.to_datetime(df_bs['date'])
-        df_bs.set_index('date', inplace=True)
+        df_bs ['date'] = pd.to_datetime(df_bs ['date'])
+        df_bs .set_index ('date', inplace=True)
 
-        # 4) Get price history and strip tz
-        t = yf.Ticker(ticker)
+        # Always strip timezone from price history
         price_hist = t.history(start=start_date, end=end_date)['Close']
         price_hist.index = price_hist.index.tz_localize(None)
 
-        # 5) Align price to each fiscal year-end
-        prices = price_hist.reindex(df_inc.index, method='ffill').values
+        if view == "Annual":
+            # --- Annual Bar Charts (5 years) ---
+            info = t.info
+            # annual earnings & revenue
+            df_ann = pd.DataFrame(requests.get(
+                f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}"
+                f"?limit=5&apikey={apikey}"
+            ).json()).set_index(pd.to_datetime(pd.DataFrame(requests.get(
+                f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}"
+                f"?limit=5&apikey={apikey}"
+            ).json())['date']))
+            df_ann_bs = pd.DataFrame(requests.get(
+                f"https://financialmodelingprep.com/api/v3/balance-sheet-statement/{ticker}"
+                f"?limit=5&apikey={apikey}"
+            ).json()).set_index(pd.to_datetime(pd.DataFrame(requests.get(
+                f"https://financialmodelingprep.com/api/v3/balance-sheet-statement/{ticker}"
+                f"?limit=5&apikey={apikey}"
+            ).json())['date']))
+            years = df_ann.index.year.astype(str)
 
-        # 6) Compute per-share metrics
-        eps = df_inc['eps'].astype(float).values
-        revenue_per_share = df_inc['revenue'].astype(float).values / info.get('sharesOutstanding', 1)
-        book_per_share    = df_bs['totalStockholdersEquity'].astype(float).values / info.get('sharesOutstanding', 1)
+            # Align year-end price
+            ye_price = price_hist.resample('Y').last().values
+            eps = df_ann['eps'].astype(float).values
+            rev_ps = df_ann['revenue'].astype(float).values / info.get('sharesOutstanding',1)
+            eq_ps  = df_ann_bs['totalStockholdersEquity'].astype(float).values / info.get('sharesOutstanding',1)
 
-        # 7) Compute ratios
-        pe = prices / eps
-        ps = prices / revenue_per_share
-        pb = prices / book_per_share
+            pe = ye_price / eps
+            ps = ye_price / rev_ps
+            pb = ye_price / eq_ps
 
-        # 8) Build DataFrame with fiscal year as index
-        years = df_inc.index.year.astype(str)
-        df_ratios = pd.DataFrame({'P/E': pe, 'P/S': ps, 'P/B': pb}, index=years)
+            df_rat = pd.DataFrame({'P/E':pe,'P/S':ps,'P/B':pb}, index=years)
 
-        # 9) Render separate bar charts
-        st.subheader("📈 P/E Ratio by Fiscal Year")
-        st.bar_chart(df_ratios['P/E'])
+            st.subheader("📈 Annual P/E by Fiscal Year")
+            st.bar_chart(df_rat['P/E'])
+            st.subheader("📈 Annual P/S by Fiscal Year")
+            st.bar_chart(df_rat['P/S'])
+            st.subheader("📈 Annual P/B by Fiscal Year")
+            st.bar_chart(df_rat['P/B'])
 
-        st.subheader("📈 P/S Ratio by Fiscal Year")
-        st.bar_chart(df_ratios['P/S'])
+        else:
+            # --- Quarterly TTM Line Charts ---
+            shares = t.info.get('sharesOutstanding', np.nan)
 
-        st.subheader("📈 P/B Ratio by Fiscal Year")
-        st.bar_chart(df_ratios['P/B'])
+            # TTM EPS & Revenue (rolling last 4 quarters)
+            df_inc = df_inc.sort_index()
+            ttm_eps     = df_inc['eps'].rolling(4).sum().dropna()
+            ttm_revenue = df_inc['revenue'].rolling(4).sum().dropna()
+            # Quarterly Book-value per share
+            bvps = (df_bs['totalStockholdersEquity'] / shares).dropna()
+
+            # Month-end price
+            monthly_price = price_hist.resample('M').last()
+
+            # Align and compute
+            pe_q = monthly_price.reindex(ttm_eps.index, method='ffill') / ttm_eps
+            ps_q = monthly_price.reindex(ttm_revenue.index, method='ffill') / (ttm_revenue / shares)
+            pb_q = monthly_price.reindex(bvps.index, method='ffill') / bvps
+
+            st.subheader("📈 Monthly P/E (TTM) Trend")
+            st.line_chart(pe_q.rename("P/E"))
+            st.subheader("📈 Monthly P/S (TTM) Trend")
+            st.line_chart(ps_q.rename("P/S"))
+            st.subheader("📈 Monthly P/B Trend")
+            st.line_chart(pb_q.rename("P/B"))
+
     except Exception as e:
-        st.warning(f"Could not generate annual valuations: {e}")
+        st.warning(f"Could not generate valuations: {e}")
 
-# --- Historical price & feature engineering ----------
+# --- Download & prepare price data ------------------
 raw = yf.download(ticker, start=start_date, end=end_date)
 if raw.empty:
     st.error("No historical price data found.")
     st.stop()
 
 data = raw[['Close']].copy()
-cs = pd.Series(data['Close'].values.flatten(), index=data.index)
+cs   = pd.Series(data['Close'].values.flatten(), index=data.index)
 
+# --- Technical indicators ----------------------------
 data['Daily_Change_%'] = cs.pct_change() * 100
 data['MA_5']           = cs.rolling(5).mean()
 data['MA_10']          = cs.rolling(10).mean()
@@ -125,9 +159,9 @@ for i in range(1, 6):
 data['Target'] = (cs.shift(-1) > cs).astype(int)
 data.dropna(inplace=True)
 
-# --- Train/Test split & AutoML ----------------------
+# --- Features & train/test --------------------------
 features = ['Daily_Change_%','MA_5','MA_10','RSI','MACD','MACD_Signal'] \
-           + [f'Close_lag_{i}' for i in range(1,6)]
+         + [f'Close_lag_{i}' for i in range(1,6)]
 if 'Volume' in raw.columns:
     data['Volume'] = raw['Volume']
     features = ['Volume'] + features
@@ -135,6 +169,7 @@ if 'Volume' in raw.columns:
 X = data[features]; y = data['Target']
 X_train, X_test, y_train, y_test = train_test_split(X,y,test_size=0.2,shuffle=False)
 
+# --- AutoML & backtest ------------------------------
 models = {
     "XGBoost":       XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42),
     "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42),
@@ -143,7 +178,7 @@ models = {
 
 results = []
 for name, model in models.items():
-    model.fit(X_train, y_train)
+    model.fit(X_train,y_train)
     preds = model.predict(X_test)
     df_t  = data.iloc[-len(y_test):].copy()
     df_t['Pred']     = preds
@@ -175,7 +210,7 @@ with st.expander("📈 Price & Predictions"):
     ax.scatter(final.index[final['Pred']==1], final['Close'][final['Pred']==1],
                color='green', marker='o', label='Up')
     ax.scatter(final.index[final['Pred']==0], final['Close'][final['Pred']==0],
-               color='red', marker='o', label='Down')
+               color='red',   marker='o', label='Down')
     ax.legend(); ax.grid(); st.pyplot(fig)
 
 with st.expander("📊 Quant Backtest Metrics"):
@@ -198,6 +233,6 @@ with st.expander("📌 Trade Signals on Chart"):
     ax.plot(final.index, final['Close'], color='gray', label='Close')
     buys  = (final['Signal']==1)&(final['Signal'].shift(1)!=1)
     sells = (final['Signal']==0)&(final['Signal'].shift(1)==1)
-    ax.scatter(final.index[buys], final['Close'][buys], color='green', marker='^', label='Buy')
-    ax.scatter(final.index[sells],final['Close'][sells], color='red', marker='v', label='Sell')
+    ax.scatter(final.index[buys],  final['Close'][buys],  color='green', marker='^', label='Buy')
+    ax.scatter(final.index[sells], final['Close'][sells], color='red',   marker='v', label='Sell')
     ax.legend(); ax.grid(); st.pyplot(fig)
