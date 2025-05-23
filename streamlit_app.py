@@ -43,57 +43,55 @@ with st.expander("🏢 Company Snapshot"):
 # --- Annual Valuations via FMP ----------------------
 with st.expander("📊 Annual Valuation Metrics (via FMP API)"):
     try:
-        # Income statements (last 5 years)
-        url_inc = (
-            f"https://financialmodelingprep.com/api/v3/income-statement/"
-            f"{ticker}?limit=5&apikey={apikey}"
+        # 1) Fetch income statement and balance sheet (last 5 years)
+        df_inc = pd.DataFrame(
+            requests.get(
+                f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}"
+                f"?limit=5&apikey={apikey}"
+            ).json()
         )
-        df_inc = pd.DataFrame(requests.get(url_inc).json())
-        if df_inc.empty or 'eps' not in df_inc.columns or 'revenue' not in df_inc.columns:
-            raise ValueError("Income statement data incomplete")
+        df_bs = pd.DataFrame(
+            requests.get(
+                f"https://financialmodelingprep.com/api/v3/balance-sheet-statement/{ticker}"
+                f"?limit=5&apikey={apikey}"
+            ).json()
+        )
 
-        # Balance sheet (last 5 years)
-        url_bs = (
-            f"https://financialmodelingprep.com/api/v3/balance-sheet-statement/"
-            f"{ticker}?limit=5&apikey={apikey}"
-        )
-        df_bs = pd.DataFrame(requests.get(url_bs).json())
+        # 2) Validate
+        if df_inc.empty or not {'eps','revenue'}.issubset(df_inc.columns):
+            raise ValueError("Income statement data incomplete")
         if df_bs.empty or 'totalStockholdersEquity' not in df_bs.columns:
             raise ValueError("Balance sheet data incomplete")
 
-        # Index by fiscal year‐end
+        # 3) Index by fiscal year-end date
         df_inc['date'] = pd.to_datetime(df_inc['date'])
         df_inc.set_index('date', inplace=True)
         df_bs['date']  = pd.to_datetime(df_bs['date'])
         df_bs.set_index('date', inplace=True)
 
-        # Fetch price history & strip timezone
-        price_hist = yf.Ticker(ticker).history(start=start_date, end=end_date)['Close']
+        # 4) Get price history and strip tz
+        t = yf.Ticker(ticker)
+        price_hist = t.history(start=start_date, end=end_date)['Close']
         price_hist.index = price_hist.index.tz_localize(None)
 
-        # Align price to fiscal dates
+        # 5) Align price to each fiscal year-end
         prices = price_hist.reindex(df_inc.index, method='ffill').values
 
-        # Extract financials
-        eps    = df_inc['eps'].astype(float).values
-        rev    = df_inc['revenue'].astype(float).values
-        equity = df_bs['totalStockholdersEquity'].astype(float).values
-        shares = yf.Ticker(ticker).info.get('sharesOutstanding', np.nan)
-        bv_ps  = equity / shares
+        # 6) Compute per-share metrics
+        eps = df_inc['eps'].astype(float).values
+        revenue_per_share = df_inc['revenue'].astype(float).values / info.get('sharesOutstanding', 1)
+        book_per_share    = df_bs['totalStockholdersEquity'].astype(float).values / info.get('sharesOutstanding', 1)
 
-        # Compute ratios
+        # 7) Compute ratios
         pe = prices / eps
-        ps = prices / (rev / 1e9)  # revenue in billions
-        pb = prices / bv_ps
+        ps = prices / revenue_per_share
+        pb = prices / book_per_share
 
-        # Build DataFrame for ratios
-        df_ratios = pd.DataFrame({
-            'P/E': pe,
-            'P/S': ps,
-            'P/B': pb
-        }, index=df_inc.index.date)
+        # 8) Build DataFrame with fiscal year as index
+        years = df_inc.index.year.astype(str)
+        df_ratios = pd.DataFrame({'P/E': pe, 'P/S': ps, 'P/B': pb}, index=years)
 
-        # Plot separate charts
+        # 9) Render separate bar charts
         st.subheader("📈 P/E Ratio by Fiscal Year")
         st.bar_chart(df_ratios['P/E'])
 
@@ -102,20 +100,18 @@ with st.expander("📊 Annual Valuation Metrics (via FMP API)"):
 
         st.subheader("📈 P/B Ratio by Fiscal Year")
         st.bar_chart(df_ratios['P/B'])
-
     except Exception as e:
         st.warning(f"Could not generate annual valuations: {e}")
 
-# --- Download & prepare price data ------------------
+# --- Historical price & feature engineering ----------
 raw = yf.download(ticker, start=start_date, end=end_date)
 if raw.empty:
     st.error("No historical price data found.")
     st.stop()
 
 data = raw[['Close']].copy()
-cs   = pd.Series(data['Close'].values.flatten(), index=data.index)
+cs = pd.Series(data['Close'].values.flatten(), index=data.index)
 
-# --- Technical indicators ----------------------------
 data['Daily_Change_%'] = cs.pct_change() * 100
 data['MA_5']           = cs.rolling(5).mean()
 data['MA_10']          = cs.rolling(10).mean()
@@ -129,18 +125,16 @@ for i in range(1, 6):
 data['Target'] = (cs.shift(-1) > cs).astype(int)
 data.dropna(inplace=True)
 
-# --- Features & train/test --------------------------
+# --- Train/Test split & AutoML ----------------------
 features = ['Daily_Change_%','MA_5','MA_10','RSI','MACD','MACD_Signal'] \
-         + [f'Close_lag_{i}' for i in range(1,6)]
+           + [f'Close_lag_{i}' for i in range(1,6)]
 if 'Volume' in raw.columns:
     data['Volume'] = raw['Volume']
     features = ['Volume'] + features
 
-X = data[features]
-y = data['Target']
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+X = data[features]; y = data['Target']
+X_train, X_test, y_train, y_test = train_test_split(X,y,test_size=0.2,shuffle=False)
 
-# --- AutoML & backtest ------------------------------
 models = {
     "XGBoost":       XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42),
     "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42),
@@ -178,10 +172,10 @@ with st.expander("📋 Model Performance"):
 with st.expander("📈 Price & Predictions"):
     fig, ax = plt.subplots(figsize=(12,5))
     ax.plot(final.index, final['Close'], color='blue', label='Close')
-    ax.scatter(final.index[final['Pred'] == 1],
-               final['Close'][final['Pred'] == 1], color='green', marker='o', label='Up')
-    ax.scatter(final.index[final['Pred'] == 0],
-               final['Close'][final['Pred'] == 0], color='red', marker='o', label='Down')
+    ax.scatter(final.index[final['Pred']==1], final['Close'][final['Pred']==1],
+               color='green', marker='o', label='Up')
+    ax.scatter(final.index[final['Pred']==0], final['Close'][final['Pred']==0],
+               color='red', marker='o', label='Down')
     ax.legend(); ax.grid(); st.pyplot(fig)
 
 with st.expander("📊 Quant Backtest Metrics"):
@@ -197,13 +191,13 @@ with st.expander("📊 Quant Backtest Metrics"):
         "Final Strat $1": [cum_str.iloc[-1]],
         "Final HLD  $1":  [cum_hld.iloc[-1]],
         "Ann Vol":        [final['StratRet'].std() * np.sqrt(252)]
-    }).T.rename(columns={0: "Value"}))
+    }).T.rename(columns={0:"Value"}))
 
 with st.expander("📌 Trade Signals on Chart"):
     fig, ax = plt.subplots(figsize=(12,5))
     ax.plot(final.index, final['Close'], color='gray', label='Close')
-    buys  = (final['Signal'] == 1) & (final['Signal'].shift(1) != 1)
-    sells = (final['Signal'] == 0) & (final['Signal'].shift(1) == 1)
-    ax.scatter(final.index[buys],  final['Close'][buys],  color='green', marker='^', label='Buy')
-    ax.scatter(final.index[sells], final['Close'][sells], color='red',   marker='v', label='Sell')
+    buys  = (final['Signal']==1)&(final['Signal'].shift(1)!=1)
+    sells = (final['Signal']==0)&(final['Signal'].shift(1)==1)
+    ax.scatter(final.index[buys], final['Close'][buys], color='green', marker='^', label='Buy')
+    ax.scatter(final.index[sells],final['Close'][sells], color='red', marker='v', label='Sell')
     ax.legend(); ax.grid(); st.pyplot(fig)
