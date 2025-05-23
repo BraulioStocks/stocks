@@ -44,22 +44,28 @@ with st.expander("🏢 Company Snapshot"):
 with st.expander("📊 Annual Valuation Metrics (via FMP API)"):
     try:
         # Income statements (last 5 years)
-        url_inc = f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}?limit=5&apikey={apikey}"
-        df_inc  = pd.DataFrame(requests.get(url_inc).json())
+        url_inc = (
+            f"https://financialmodelingprep.com/api/v3/income-statement/"
+            f"{ticker}?limit=5&apikey={apikey}"
+        )
+        df_inc = pd.DataFrame(requests.get(url_inc).json())
         if df_inc.empty or 'eps' not in df_inc.columns or 'revenue' not in df_inc.columns:
             raise ValueError("Income statement data incomplete")
 
         # Balance sheet (last 5 years)
-        url_bs  = f"https://financialmodelingprep.com/api/v3/balance-sheet-statement/{ticker}?limit=5&apikey={apikey}"
-        df_bs   = pd.DataFrame(requests.get(url_bs).json())
+        url_bs = (
+            f"https://financialmodelingprep.com/api/v3/balance-sheet-statement/"
+            f"{ticker}?limit=5&apikey={apikey}"
+        )
+        df_bs = pd.DataFrame(requests.get(url_bs).json())
         if df_bs.empty or 'totalStockholdersEquity' not in df_bs.columns:
             raise ValueError("Balance sheet data incomplete")
 
         # Index by fiscal year‐end
         df_inc['date'] = pd.to_datetime(df_inc['date'])
         df_inc.set_index('date', inplace=True)
-        df_bs ['date'] = pd.to_datetime(df_bs ['date'])
-        df_bs.set_index ('date', inplace=True)
+        df_bs['date']  = pd.to_datetime(df_bs['date'])
+        df_bs.set_index('date', inplace=True)
 
         # Fetch price history & strip timezone
         price_hist = yf.Ticker(ticker).history(start=start_date, end=end_date)['Close']
@@ -80,13 +86,22 @@ with st.expander("📊 Annual Valuation Metrics (via FMP API)"):
         ps = prices / (rev / 1e9)  # revenue in billions
         pb = prices / bv_ps
 
-        # Plot bar chart
+        # Build DataFrame for ratios
         df_ratios = pd.DataFrame({
             'P/E': pe,
             'P/S': ps,
             'P/B': pb
         }, index=df_inc.index.date)
-        st.bar_chart(df_ratios)
+
+        # Plot separate charts
+        st.subheader("📈 P/E Ratio by Fiscal Year")
+        st.bar_chart(df_ratios['P/E'])
+
+        st.subheader("📈 P/S Ratio by Fiscal Year")
+        st.bar_chart(df_ratios['P/S'])
+
+        st.subheader("📈 P/B Ratio by Fiscal Year")
+        st.bar_chart(df_ratios['P/B'])
 
     except Exception as e:
         st.warning(f"Could not generate annual valuations: {e}")
@@ -100,7 +115,7 @@ if raw.empty:
 data = raw[['Close']].copy()
 cs   = pd.Series(data['Close'].values.flatten(), index=data.index)
 
-# Technical indicators
+# --- Technical indicators ----------------------------
 data['Daily_Change_%'] = cs.pct_change() * 100
 data['MA_5']           = cs.rolling(5).mean()
 data['MA_10']          = cs.rolling(10).mean()
@@ -114,7 +129,7 @@ for i in range(1, 6):
 data['Target'] = (cs.shift(-1) > cs).astype(int)
 data.dropna(inplace=True)
 
-# Feature list (add Volume if present)
+# --- Features & train/test --------------------------
 features = ['Daily_Change_%','MA_5','MA_10','RSI','MACD','MACD_Signal'] \
          + [f'Close_lag_{i}' for i in range(1,6)]
 if 'Volume' in raw.columns:
@@ -136,14 +151,20 @@ results = []
 for name, model in models.items():
     model.fit(X_train, y_train)
     preds = model.predict(X_test)
-    df_t   = data.iloc[-len(y_test):].copy()
+    df_t  = data.iloc[-len(y_test):].copy()
     df_t['Pred']     = preds
     df_t['Signal']   = df_t['Pred'].shift(1)
     df_t['DailyRet'] = df_t['Close'].pct_change()
     df_t['StratRet'] = df_t['DailyRet'] * df_t['Signal']
-    cum               = (1 + df_t['StratRet'].fillna(0)).cumprod()
-    sharpe            = np.sqrt(252) * df_t['StratRet'].mean() / df_t['StratRet'].std()
-    results.append({"Model":name, "Accuracy":accuracy_score(y_test,preds), "Sharpe":sharpe, "FinalVal":cum.iloc[-1], "Preds":preds})
+    cum              = (1 + df_t['StratRet'].fillna(0)).cumprod()
+    sharpe           = np.sqrt(252) * df_t['StratRet'].mean() / df_t['StratRet'].std()
+    results.append({
+        "Model":    name,
+        "Accuracy": accuracy_score(y_test, preds),
+        "Sharpe":   sharpe,
+        "FinalVal": cum.iloc[-1],
+        "Preds":    preds
+    })
 
 best  = max(results, key=lambda x: x['Sharpe'])
 final = data.iloc[-len(y_test):].copy()
@@ -151,4 +172,38 @@ final['Pred'] = best['Preds']
 
 st.success(f"✅ Best model: {best['Model']} (Sharpe {best['Sharpe']:.2f})")
 
-# …rest of your plotting/backtest code unchanged…
+with st.expander("📋 Model Performance"):
+    st.write(f"Model: **{best['Model']}**   Accuracy: **{best['Accuracy']:.2%}**")
+
+with st.expander("📈 Price & Predictions"):
+    fig, ax = plt.subplots(figsize=(12,5))
+    ax.plot(final.index, final['Close'], color='blue', label='Close')
+    ax.scatter(final.index[final['Pred'] == 1],
+               final['Close'][final['Pred'] == 1], color='green', marker='o', label='Up')
+    ax.scatter(final.index[final['Pred'] == 0],
+               final['Close'][final['Pred'] == 0], color='red', marker='o', label='Down')
+    ax.legend(); ax.grid(); st.pyplot(fig)
+
+with st.expander("📊 Quant Backtest Metrics"):
+    final['Signal']   = final['Pred'].shift(1)
+    final['DailyRet'] = final['Close'].pct_change()
+    final['StratRet'] = final['DailyRet'] * final['Signal']
+    cum_str = (1 + final['StratRet'].fillna(0)).cumprod()
+    cum_hld = (1 + final['DailyRet'].fillna(0)).cumprod()
+    sr_f    = np.sqrt(252) * final['StratRet'].mean() / final['StratRet'].std()
+    st.metric("Sharpe Ratio", f"{sr_f:.2f}")
+    st.line_chart(pd.DataFrame({"Strategy": cum_str, "Buy & Hold": cum_hld}))
+    st.dataframe(pd.DataFrame({
+        "Final Strat $1": [cum_str.iloc[-1]],
+        "Final HLD  $1":  [cum_hld.iloc[-1]],
+        "Ann Vol":        [final['StratRet'].std() * np.sqrt(252)]
+    }).T.rename(columns={0: "Value"}))
+
+with st.expander("📌 Trade Signals on Chart"):
+    fig, ax = plt.subplots(figsize=(12,5))
+    ax.plot(final.index, final['Close'], color='gray', label='Close')
+    buys  = (final['Signal'] == 1) & (final['Signal'].shift(1) != 1)
+    sells = (final['Signal'] == 0) & (final['Signal'].shift(1) == 1)
+    ax.scatter(final.index[buys],  final['Close'][buys],  color='green', marker='^', label='Buy')
+    ax.scatter(final.index[sells], final['Close'][sells], color='red',   marker='v', label='Sell')
+    ax.legend(); ax.grid(); st.pyplot(fig)
