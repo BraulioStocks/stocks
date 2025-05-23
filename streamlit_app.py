@@ -43,49 +43,44 @@ with st.expander("🏢 Company Snapshot"):
 # --- Annual Valuations via FMP ----------------------
 with st.expander("📊 Annual Valuation Metrics (via FMP API)"):
     try:
-        # 1) Income statements (last 5 years)
-        url_inc = (
-            f"https://financialmodelingprep.com/api/v3/income-statement/"
-            f"{ticker}?limit=5&apikey={apikey}"
-        )
-        df_inc = pd.DataFrame(requests.get(url_inc).json())
+        # Income statements (last 5 years)
+        url_inc = f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}?limit=5&apikey={apikey}"
+        df_inc  = pd.DataFrame(requests.get(url_inc).json())
         if df_inc.empty or 'eps' not in df_inc.columns or 'revenue' not in df_inc.columns:
             raise ValueError("Income statement data incomplete")
 
-        # 2) Balance sheet (last 5 years)
-        url_bs = (
-            f"https://financialmodelingprep.com/api/v3/balance-sheet-statement/"
-            f"{ticker}?limit=5&apikey={apikey}"
-        )
-        df_bs = pd.DataFrame(requests.get(url_bs).json())
+        # Balance sheet (last 5 years)
+        url_bs  = f"https://financialmodelingprep.com/api/v3/balance-sheet-statement/{ticker}?limit=5&apikey={apikey}"
+        df_bs   = pd.DataFrame(requests.get(url_bs).json())
         if df_bs.empty or 'totalStockholdersEquity' not in df_bs.columns:
             raise ValueError("Balance sheet data incomplete")
 
-        # 3) Index by fiscal year-end
+        # Index by fiscal year‐end
         df_inc['date'] = pd.to_datetime(df_inc['date'])
         df_inc.set_index('date', inplace=True)
-        df_bs['date']  = pd.to_datetime(df_bs['date'])
-        df_bs.set_index('date', inplace=True)
+        df_bs ['date'] = pd.to_datetime(df_bs ['date'])
+        df_bs.set_index ('date', inplace=True)
 
-        # 4) Get price history and drop tz info
-        hist = yf.Ticker(ticker).history(start=start_date, end=end_date)['Close']
-        hist.index = hist.index.tz_localize(None)  # strip timezone
-        # align on fiscal dates
-        prices = hist.reindex(df_inc.index, method='ffill').values
+        # Fetch price history & strip timezone
+        price_hist = yf.Ticker(ticker).history(start=start_date, end=end_date)['Close']
+        price_hist.index = price_hist.index.tz_localize(None)
 
-        # 5) Extract financials
+        # Align price to fiscal dates
+        prices = price_hist.reindex(df_inc.index, method='ffill').values
+
+        # Extract financials
         eps    = df_inc['eps'].astype(float).values
         rev    = df_inc['revenue'].astype(float).values
         equity = df_bs['totalStockholdersEquity'].astype(float).values
         shares = yf.Ticker(ticker).info.get('sharesOutstanding', np.nan)
         bv_ps  = equity / shares
 
-        # 6) Compute ratios
+        # Compute ratios
         pe = prices / eps
-        ps = prices / (rev / 1e9)   # rev in billions
+        ps = prices / (rev / 1e9)  # revenue in billions
         pb = prices / bv_ps
 
-        # 7) Plot bar chart
+        # Plot bar chart
         df_ratios = pd.DataFrame({
             'P/E': pe,
             'P/S': ps,
@@ -105,12 +100,12 @@ if raw.empty:
 data = raw[['Close']].copy()
 cs   = pd.Series(data['Close'].values.flatten(), index=data.index)
 
-# --- Technical indicators ----------------------------
+# Technical indicators
 data['Daily_Change_%'] = cs.pct_change() * 100
 data['MA_5']           = cs.rolling(5).mean()
 data['MA_10']          = cs.rolling(10).mean()
 data['RSI']            = ta.momentum.RSIIndicator(close=cs, window=14).rsi()
-macd_obj               = ta.trend.MACD(close=cs)
+macd_obj              = ta.trend.MACD(close=cs)
 data['MACD']           = macd_obj.macd()
 data['MACD_Signal']    = macd_obj.macd_signal()
 for i in range(1, 6):
@@ -119,15 +114,16 @@ for i in range(1, 6):
 data['Target'] = (cs.shift(-1) > cs).astype(int)
 data.dropna(inplace=True)
 
-# --- Features & train/test --------------------------
+# Feature list (add Volume if present)
 features = ['Daily_Change_%','MA_5','MA_10','RSI','MACD','MACD_Signal'] \
          + [f'Close_lag_{i}' for i in range(1,6)]
 if 'Volume' in raw.columns:
     data['Volume'] = raw['Volume']
     features = ['Volume'] + features
 
-X = data[features]; y = data['Target']
-X_train, X_test, y_train, y_test = train_test_split(X,y,test_size=0.2, shuffle=False)
+X = data[features]
+y = data['Target']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
 # --- AutoML & backtest ------------------------------
 models = {
@@ -137,16 +133,16 @@ models = {
 }
 
 results = []
-for name,model in models.items():
-    model.fit(X_train,y_train)
+for name, model in models.items():
+    model.fit(X_train, y_train)
     preds = model.predict(X_test)
-    df_t  = data.iloc[-len(y_test):].copy()
+    df_t   = data.iloc[-len(y_test):].copy()
     df_t['Pred']     = preds
     df_t['Signal']   = df_t['Pred'].shift(1)
     df_t['DailyRet'] = df_t['Close'].pct_change()
     df_t['StratRet'] = df_t['DailyRet'] * df_t['Signal']
-    cum              = (1 + df_t['StratRet'].fillna(0)).cumprod()
-    sharpe           = np.sqrt(252) * df_t['StratRet'].mean() / df_t['StratRet'].std()
+    cum               = (1 + df_t['StratRet'].fillna(0)).cumprod()
+    sharpe            = np.sqrt(252) * df_t['StratRet'].mean() / df_t['StratRet'].std()
     results.append({"Model":name, "Accuracy":accuracy_score(y_test,preds), "Sharpe":sharpe, "FinalVal":cum.iloc[-1], "Preds":preds})
 
 best  = max(results, key=lambda x: x['Sharpe'])
@@ -155,4 +151,4 @@ final['Pred'] = best['Preds']
 
 st.success(f"✅ Best model: {best['Model']} (Sharpe {best['Sharpe']:.2f})")
 
-# ... (rest of your plotting/backtest code remains unchanged) ...
+# …rest of your plotting/backtest code unchanged…
